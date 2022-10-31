@@ -4,10 +4,6 @@
 // to creating a new db?)
 // Otherwise any missing migrations are run on the connection
 
-// NOT DONE YET
-// At compile time, the migration is run on an in memory db. The effected tables are then inspected in
-// order to construct the table structs for use in the query builder
-
 use anyhow::{anyhow, Result};
 use indoc::{formatdoc, indoc};
 
@@ -15,7 +11,6 @@ use crate::connection::Connection;
 
 const MIGRATIONS_MIGRATION: Migration = Migration::new(
     "migrations",
-    &["migrations"],
     // The migrations migration must be infallable because it runs to completion
     // with every call to migration run and is run unchecked.
     &[indoc! {"
@@ -29,21 +24,12 @@ const MIGRATIONS_MIGRATION: Migration = Migration::new(
 
 pub struct Migration {
     domain: &'static str,
-    tables: &'static [&'static str],
     migrations: &'static [&'static str],
 }
 
 impl Migration {
-    pub const fn new(
-        domain: &'static str,
-        tables: &'static [&'static str],
-        migrations: &'static [&'static str],
-    ) -> Self {
-        Self {
-            domain,
-            tables,
-            migrations,
-        }
+    pub const fn new(domain: &'static str, migrations: &'static [&'static str]) -> Self {
+        Self { domain, migrations }
     }
 
     fn run_unchecked(&self, connection: &Connection) -> Result<()> {
@@ -53,10 +39,6 @@ impl Migration {
     pub fn run(&self, connection: &Connection) -> Result<()> {
         // Setup the migrations table unconditionally
         MIGRATIONS_MIGRATION.run_unchecked(connection)?;
-
-        if self.tables.is_empty() {
-            panic!("Migration must list effected tables");
-        }
 
         let completed_migrations = connection
             .prepare(indoc! {"
@@ -110,7 +92,6 @@ mod test {
         // Create first migration with a single step and run it
         let mut migration = Migration::new(
             "test",
-            &["test"],
             &[indoc! {"
             CREATE TABLE test1 (
                 a TEXT,
@@ -193,7 +174,7 @@ mod test {
         let connection = Connection::open_memory("migrations_dont_rerun");
 
         // Create migration which clears a table
-        let migration = Migration::new("test", &["test"], &["DELETE FROM test_table"]);
+        let migration = Migration::new("test", &["DELETE FROM test_table"]);
 
         // Manually create the table for that migration with a row
         connection
@@ -248,7 +229,6 @@ mod test {
         // Create a migration with two steps and run it
         Migration::new(
             "test migration",
-            &["test"],
             &[
                 indoc! {"
                 CREATE TABLE test (
@@ -264,7 +244,6 @@ mod test {
         // Create another migration with the same domain but different steps
         let second_migration_result = Migration::new(
             "test migration",
-            &["test"],
             &[
                 indoc! {"
                 CREATE TABLE test (
