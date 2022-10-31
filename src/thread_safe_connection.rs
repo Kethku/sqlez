@@ -8,6 +8,7 @@ use crate::connection;
 pub struct ThreadSafeConnection {
     uri: Arc<str>,
     persistent: bool,
+    initialize_query: Option<&'static str>,
     connection: Arc<ThreadLocal<Connection>>,
 }
 
@@ -16,8 +17,16 @@ impl ThreadSafeConnection {
         Self {
             uri: Arc::from(uri),
             persistent,
+            initialize_query: None,
             connection: Default::default(),
         }
+    }
+
+    /// Sets the query to run every time a connection is opened. This must
+    /// be infallible (EG only use pragma statements)
+    pub fn with_initalize_query(mut self, initialize_query: &'static str) -> Self {
+        self.initialize_query = Some(initialize_query);
+        self
     }
 
     /// Opens a new db connection with the initialized file path. This is internal and only
@@ -39,6 +48,7 @@ impl Clone for ThreadSafeConnection {
         Self {
             uri: self.uri.clone(),
             persistent: self.persistent,
+            initialize_query: self.initialize_query.clone(),
             connection: self.connection.clone(),
         }
     }
@@ -49,11 +59,20 @@ impl Deref for ThreadSafeConnection {
 
     fn deref(&self) -> &Self::Target {
         self.connection.get_or(|| {
-            if self.persistent {
+            let connection = if self.persistent {
                 self.open_file()
             } else {
                 self.open_shared_memory()
+            };
+
+            if let Some(initialize_query) = self.initialize_query {
+                connection.exec(initialize_query).expect(&format!(
+                    "Initialize query failed to execute: {}",
+                    initialize_query
+                ));
             }
+
+            connection
         })
     }
 }
