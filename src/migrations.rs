@@ -189,7 +189,7 @@ mod test {
             connection
                 .prepare("SELECT * FROM test_table")
                 .unwrap()
-                .single::<usize>()
+                .row::<usize>()
                 .unwrap(),
             1
         );
@@ -216,7 +216,7 @@ mod test {
             connection
                 .prepare("SELECT * FROM test_table")
                 .unwrap()
-                .single::<usize>()
+                .row::<usize>()
                 .unwrap(),
             2
         );

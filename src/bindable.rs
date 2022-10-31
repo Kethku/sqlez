@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::statement::Statement;
+use crate::statement::{SqlType, Statement};
 
 pub trait Bind {
     fn bind(&self, statement: &Statement, start_index: i32) -> Result<i32>;
@@ -162,5 +162,48 @@ impl<T1: Column, T2: Column, T3: Column, T4: Column> Column for (T1, T2, T3, T4)
         let (third, next_index) = T3::column(statement, next_index)?;
         let (forth, next_index) = T4::column(statement, next_index)?;
         Ok(((first, second, third, forth), next_index))
+    }
+}
+
+impl<T: Bind> Bind for Option<T> {
+    fn bind(&self, statement: &Statement, start_index: i32) -> Result<i32> {
+        if let Some(this) = self {
+            this.bind(statement, start_index)
+        } else {
+            statement.bind_null(start_index)?;
+            Ok(start_index + 1)
+        }
+    }
+}
+
+impl<T: Column> Column for Option<T> {
+    fn column(statement: &mut Statement, start_index: i32) -> Result<(Self, i32)> {
+        if let SqlType::Null = statement.column_type(start_index)? {
+            Ok((None, start_index + 1))
+        } else {
+            T::column(statement, start_index).map(|(result, next_index)| (Some(result), next_index))
+        }
+    }
+}
+
+impl<T: Bind, const COUNT: usize> Bind for [T; COUNT] {
+    fn bind(&self, statement: &Statement, start_index: i32) -> Result<i32> {
+        let mut current_index = start_index;
+        for binding in self {
+            current_index = binding.bind(statement, current_index)?
+        }
+
+        Ok(current_index)
+    }
+}
+
+impl<T: Column + Default + Copy, const COUNT: usize> Column for [T; COUNT] {
+    fn column(statement: &mut Statement, start_index: i32) -> Result<(Self, i32)> {
+        let mut array = [Default::default(); COUNT];
+        let mut current_index = start_index;
+        for i in 0..COUNT {
+            (array[i], current_index) = T::column(statement, current_index)?;
+        }
+        Ok((array, current_index))
     }
 }

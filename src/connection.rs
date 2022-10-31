@@ -166,7 +166,7 @@ mod test {
             &connection
                 .prepare("SELECT text FROM text;")
                 .unwrap()
-                .single::<String>()
+                .row::<String>()
                 .unwrap(),
             text
         );

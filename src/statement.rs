@@ -23,6 +23,15 @@ pub enum StepResult {
     Other(i32),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SqlType {
+    Text,
+    Integer,
+    Blob,
+    Float,
+    Null,
+}
+
 impl<'a> Statement<'a> {
     pub fn prepare<T: AsRef<str>>(connection: &'a Connection, query: T) -> Result<Self> {
         let mut statement = Self {
@@ -68,7 +77,7 @@ impl<'a> Statement<'a> {
         }
 
         unsafe {
-            dbg!(sqlite3_reset(self.statement));
+            sqlite3_reset(self.statement);
         }
 
         self.ready = true;
@@ -190,6 +199,19 @@ impl<'a> Statement<'a> {
         Ok(result)
     }
 
+    pub fn column_type(&mut self, index: i32) -> Result<SqlType> {
+        let result = unsafe { sqlite3_column_type(self.statement, index) }; // SELECT <FRIEND> FROM TABLE
+        self.connection.last_error()?;
+        match result {
+            SQLITE_INTEGER => Ok(SqlType::Integer),
+            SQLITE_FLOAT => Ok(SqlType::Float),
+            SQLITE_TEXT => Ok(SqlType::Text),
+            SQLITE_BLOB => Ok(SqlType::Blob),
+            SQLITE_NULL => Ok(SqlType::Null),
+            _ => Err(anyhow!("Column type returned was incorrect ")),
+        }
+    }
+
     pub fn bound(&mut self, bindings: impl Bind) -> Result<&mut Self> {
         self.reset()?;
         self.bind(bindings)?;
@@ -218,10 +240,7 @@ impl<'a> Statement<'a> {
         self.map(|s| s.column::<R>())
     }
 
-    pub fn single_map<R>(
-        &mut self,
-        callback: impl FnOnce(&mut Statement) -> Result<R>,
-    ) -> Result<R> {
+    pub fn single<R>(&mut self, callback: impl FnOnce(&mut Statement) -> Result<R>) -> Result<R> {
         self.reset()?;
         if self.step()? != StepResult::Row {
             return Err(anyhow!(
@@ -232,8 +251,24 @@ impl<'a> Statement<'a> {
         Ok(result)
     }
 
-    pub fn single<R: Column>(&mut self) -> Result<R> {
-        self.single_map(|this| this.column::<R>())
+    pub fn row<R: Column>(&mut self) -> Result<R> {
+        self.single(|this| this.column::<R>())
+    }
+
+    pub fn maybe<R>(
+        &mut self,
+        callback: impl FnOnce(&mut Statement) -> Result<R>,
+    ) -> Result<Option<R>> {
+        self.reset()?;
+        if self.step()? != StepResult::Row {
+            return Ok(None);
+        }
+        let result = callback(self)?;
+        Ok(Some(result))
+    }
+
+    pub fn maybe_row<R: Column>(&mut self) -> Result<Option<R>> {
+        self.maybe(|this| this.column::<R>())
     }
 }
 
