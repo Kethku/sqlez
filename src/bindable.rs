@@ -114,6 +114,20 @@ impl Column for String {
     }
 }
 
+impl<T: Bind> Bind for Option<T> {
+    fn bind(&self, statement: &Statement, start_index: i32) -> Result<i32> {
+        match self {
+            Some(t) => {
+                t.bind(statement, start_index)?;
+            }
+            None => {
+                statement.bind_null(start_index)?;
+            }
+        }
+        Ok(start_index + 1)
+    }
+}
+
 impl<T1: Bind, T2: Bind> Bind for (T1, T2) {
     fn bind(&self, statement: &Statement, start_index: i32) -> Result<i32> {
         let next_index = self.0.bind(statement, start_index)?;
