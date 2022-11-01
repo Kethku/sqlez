@@ -12,22 +12,17 @@ impl Connection {
     {
         let name = name.as_ref().to_owned();
         self.exec(format!("SAVEPOINT {}", &name))?;
-        match f(self) {
-            Ok(Some(r)) => {
+        let result = f(self);
+        match result {
+            Ok(Some(_)) => {
                 self.exec(format!("RELEASE {}", name))?;
-                Ok(Some(r))
             }
-            Ok(None) => {
+            Ok(None) | Err(_) => {
                 self.exec(format!("ROLLBACK TO {}", name))?;
                 self.exec(format!("RELEASE {}", name))?;
-                Ok(None)
-            }
-            Err(e) => {
-                self.exec(format!("ROLLBACK TO {}", name))?;
-                self.exec(format!("RELEASE {}", name))?;
-                Err(e)
             }
         }
+        result
     }
 }
 
