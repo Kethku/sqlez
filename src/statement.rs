@@ -11,7 +11,6 @@ use crate::connection::Connection;
 pub struct Statement<'a> {
     statement: *mut sqlite3_stmt,
     connection: &'a Connection,
-    ready: bool,
     phantom: PhantomData<sqlite3_stmt>,
 }
 
@@ -37,7 +36,6 @@ impl<'a> Statement<'a> {
         let mut statement = Self {
             statement: 0 as *mut _,
             connection,
-            ready: true,
             phantom: PhantomData,
         };
 
@@ -56,34 +54,10 @@ impl<'a> Statement<'a> {
         Ok(statement)
     }
 
-    pub fn step(&mut self) -> Result<StepResult> {
-        unsafe {
-            self.ready = false;
-            match sqlite3_step(self.statement) {
-                SQLITE_ROW => Ok(StepResult::Row),
-                SQLITE_DONE => Ok(StepResult::Done),
-                SQLITE_MISUSE => Ok(StepResult::Misuse),
-                other => self
-                    .connection
-                    .last_error()
-                    .map(|_| StepResult::Other(other)),
-            }
-        }
-    }
-
-    pub fn reset(&mut self) -> Result<()> {
-        if self.ready {
-            return Ok(());
-        }
-
+    pub fn reset(&mut self) {
         unsafe {
             sqlite3_reset(self.statement);
         }
-
-        self.ready = true;
-        self.connection
-            .last_error()
-            .context("Could not reset prepared statement")
     }
 
     pub fn bind_blob(&self, index: i32, blob: &[u8]) -> Result<()> {
@@ -213,27 +187,49 @@ impl<'a> Statement<'a> {
     }
 
     pub fn bound(&mut self, bindings: impl Bind) -> Result<&mut Self> {
-        self.reset()?;
         self.bind(bindings)?;
         Ok(self)
     }
 
-    pub fn run(&mut self) -> Result<()> {
-        self.reset()?;
-        while self.step()? == StepResult::Row {}
-        Ok(())
+    fn step(&mut self) -> Result<StepResult> {
+        unsafe {
+            match sqlite3_step(self.statement) {
+                SQLITE_ROW => Ok(StepResult::Row),
+                SQLITE_DONE => Ok(StepResult::Done),
+                SQLITE_MISUSE => Ok(StepResult::Misuse),
+                other => self
+                    .connection
+                    .last_error()
+                    .map(|_| StepResult::Other(other)),
+            }
+        }
     }
 
-    pub fn map<R>(
-        &mut self,
-        mut callback: impl FnMut(&mut Statement) -> Result<R>,
-    ) -> Result<Vec<R>> {
-        let mut results = Vec::new();
-        self.reset()?;
-        while self.step()? == StepResult::Row {
-            results.push(callback(self)?);
+    pub fn run(&mut self) -> Result<()> {
+        fn logic(this: &mut Statement) -> Result<()> {
+            while this.step()? == StepResult::Row {}
+            Ok(())
         }
-        Ok(results)
+        let result = logic(self);
+        self.reset();
+        result
+    }
+
+    pub fn map<R>(&mut self, callback: impl FnMut(&mut Statement) -> Result<R>) -> Result<Vec<R>> {
+        fn logic<R>(
+            this: &mut Statement,
+            mut callback: impl FnMut(&mut Statement) -> Result<R>,
+        ) -> Result<Vec<R>> {
+            let mut mapped_rows = Vec::new();
+            while this.step()? == StepResult::Row {
+                mapped_rows.push(callback(this)?);
+            }
+            Ok(mapped_rows)
+        }
+
+        let result = logic(self, callback);
+        self.reset();
+        result
     }
 
     pub fn rows<R: Column>(&mut self) -> Result<Vec<R>> {
@@ -241,14 +237,20 @@ impl<'a> Statement<'a> {
     }
 
     pub fn single<R>(&mut self, callback: impl FnOnce(&mut Statement) -> Result<R>) -> Result<R> {
-        self.reset()?;
-        if self.step()? != StepResult::Row {
-            return Err(anyhow!(
-                "Single(Map) called with query that returns no rows."
-            ));
+        fn logic<R>(
+            this: &mut Statement,
+            callback: impl FnOnce(&mut Statement) -> Result<R>,
+        ) -> Result<R> {
+            if this.step()? != StepResult::Row {
+                return Err(anyhow!(
+                    "Single(Map) called with query that returns no rows."
+                ));
+            }
+            callback(this)
         }
-        let result = callback(self)?;
-        Ok(result)
+        let result = logic(self, callback);
+        self.reset();
+        result
     }
 
     pub fn row<R: Column>(&mut self) -> Result<R> {
@@ -259,12 +261,18 @@ impl<'a> Statement<'a> {
         &mut self,
         callback: impl FnOnce(&mut Statement) -> Result<R>,
     ) -> Result<Option<R>> {
-        self.reset()?;
-        if self.step()? != StepResult::Row {
-            return Ok(None);
+        fn logic<R>(
+            this: &mut Statement,
+            callback: impl FnOnce(&mut Statement) -> Result<R>,
+        ) -> Result<Option<R>> {
+            if this.step()? != StepResult::Row {
+                return Ok(None);
+            }
+            callback(this).map(|r| Some(r))
         }
-        let result = callback(self)?;
-        Ok(Some(result))
+        let result = logic(self, callback);
+        self.reset();
+        result
     }
 
     pub fn maybe_row<R: Column>(&mut self) -> Result<Option<R>> {
@@ -275,5 +283,43 @@ impl<'a> Statement<'a> {
 impl<'a> Drop for Statement<'a> {
     fn drop(&mut self) {
         unsafe { sqlite3_finalize(self.statement) };
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use indoc::indoc;
+
+    use crate::{connection::Connection, statement::StepResult};
+
+    #[test]
+    fn blob_round_trips() {
+        let connection1 = Connection::open_memory("blob_round_trips");
+        connection1
+            .exec(indoc! {"
+            CREATE TABLE blobs (
+            data BLOB
+            );"})
+            .unwrap();
+
+        let blob = &[0, 1, 2, 4, 8, 16, 32, 64];
+
+        let mut write = connection1
+            .prepare("INSERT INTO blobs (data) VALUES (?);")
+            .unwrap();
+        write.bind_blob(1, blob).unwrap();
+        assert_eq!(write.step().unwrap(), StepResult::Done);
+
+        // Read the blob from the
+        let connection2 = Connection::open_memory("blob_round_trips");
+        let mut read = connection2.prepare("SELECT * FROM blobs;").unwrap();
+        assert_eq!(read.step().unwrap(), StepResult::Row);
+        assert_eq!(read.column_blob(0).unwrap(), blob);
+        assert_eq!(read.step().unwrap(), StepResult::Done);
+
+        // Delete the added blob and verify its deleted on the other side
+        connection2.exec("DELETE FROM blobs;").unwrap();
+        let mut read = connection1.prepare("SELECT * FROM blobs;").unwrap();
+        assert_eq!(read.step().unwrap(), StepResult::Done);
     }
 }

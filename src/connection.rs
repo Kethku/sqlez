@@ -6,7 +6,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use libsqlite3_sys::*;
 
-use crate::statement::Statement;
+use crate::{statement::Statement, transaction::Transaction};
 
 pub struct Connection {
     pub(crate) sqlite3: *mut sqlite3,
@@ -81,10 +81,12 @@ impl Connection {
             );
             sqlite3_backup_step(backup, -1);
             sqlite3_backup_finish(backup);
-            destination.last_error()?;
-        };
+            destination.last_error()
+        }
+    }
 
-        Ok(())
+    pub fn transaction(&self, name: impl AsRef<str>) -> Result<Transaction> {
+        Transaction::save_point(self, name)
     }
 
     pub(crate) fn last_error(&self) -> Result<()> {
@@ -125,38 +127,7 @@ mod test {
     use anyhow::Result;
     use indoc::indoc;
 
-    use crate::{connection::Connection, statement::StepResult};
-
-    #[test]
-    fn blob_round_trips() {
-        let connection1 = Connection::open_memory("blob_round_trips");
-        connection1
-            .exec(indoc! {"
-                CREATE TABLE blobs (
-                    data BLOB
-                );"})
-            .unwrap();
-
-        let blob = &[0, 1, 2, 4, 8, 16, 32, 64];
-
-        let mut write = connection1
-            .prepare("INSERT INTO blobs (data) VALUES (?);")
-            .unwrap();
-        write.bind_blob(1, blob).unwrap();
-        assert_eq!(write.step().unwrap(), StepResult::Done);
-
-        // Read the blob from the
-        let connection2 = Connection::open_memory("blob_round_trips");
-        let mut read = connection2.prepare("SELECT * FROM blobs;").unwrap();
-        assert_eq!(read.step().unwrap(), StepResult::Row);
-        assert_eq!(read.column_blob(0).unwrap(), blob);
-        assert_eq!(read.step().unwrap(), StepResult::Done);
-
-        // Delete the added blob and verify its deleted on the other side
-        connection2.exec("DELETE FROM blobs;").unwrap();
-        let mut read = connection1.prepare("SELECT * FROM blobs;").unwrap();
-        assert_eq!(read.step().unwrap(), StepResult::Done);
-    }
+    use crate::connection::Connection;
 
     #[test]
     fn string_round_trips() -> Result<()> {
@@ -236,7 +207,7 @@ mod test {
             .prepare("INSERT INTO blobs (data) VALUES (?);")
             .unwrap();
         write.bind_blob(1, blob).unwrap();
-        assert_eq!(write.step().unwrap(), StepResult::Done);
+        write.run().unwrap();
 
         // Backup connection1 to connection2
         let connection2 = Connection::open_memory("backup_works_other");
