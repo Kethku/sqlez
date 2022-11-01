@@ -6,7 +6,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use libsqlite3_sys::*;
 
-use crate::{statement::Statement, transaction::Transaction};
+use crate::statement::Statement;
 
 pub struct Connection {
     pub(crate) sqlite3: *mut sqlite3,
@@ -71,7 +71,7 @@ impl Connection {
         Statement::prepare(&self, query)
     }
 
-    pub fn backup(&self, destination: &Connection) -> Result<()> {
+    pub fn backup_main(&self, destination: &Connection) -> Result<()> {
         unsafe {
             let backup = sqlite3_backup_init(
                 destination.sqlite3,
@@ -83,10 +83,6 @@ impl Connection {
             sqlite3_backup_finish(backup);
             destination.last_error()
         }
-    }
-
-    pub fn transaction(&self, name: impl AsRef<str>) -> Result<Transaction> {
-        Transaction::save_point(self, name)
     }
 
     pub(crate) fn last_error(&self) -> Result<()> {
@@ -211,7 +207,7 @@ mod test {
 
         // Backup connection1 to connection2
         let connection2 = Connection::open_memory("backup_works_other");
-        connection1.backup(&connection2).unwrap();
+        connection1.backup_main(&connection2).unwrap();
 
         // Delete the added blob and verify its deleted on the other side
         let read_blobs = connection1

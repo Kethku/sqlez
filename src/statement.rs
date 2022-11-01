@@ -9,7 +9,7 @@ use crate::bindable::{Bind, Column};
 use crate::connection::Connection;
 
 pub struct Statement<'a> {
-    statement: *mut sqlite3_stmt,
+    raw_statement: *mut sqlite3_stmt,
     connection: &'a Connection,
     phantom: PhantomData<sqlite3_stmt>,
 }
@@ -34,7 +34,7 @@ pub enum SqlType {
 impl<'a> Statement<'a> {
     pub fn prepare<T: AsRef<str>>(connection: &'a Connection, query: T) -> Result<Self> {
         let mut statement = Self {
-            statement: 0 as *mut _,
+            raw_statement: 0 as *mut _,
             connection,
             phantom: PhantomData,
         };
@@ -44,7 +44,7 @@ impl<'a> Statement<'a> {
                 connection.sqlite3,
                 CString::new(query.as_ref())?.as_ptr(),
                 -1,
-                &mut statement.statement,
+                &mut statement.raw_statement,
                 0 as *mut _,
             );
 
@@ -56,7 +56,7 @@ impl<'a> Statement<'a> {
 
     pub fn reset(&mut self) {
         unsafe {
-            sqlite3_reset(self.statement);
+            sqlite3_reset(self.raw_statement);
         }
     }
 
@@ -65,20 +65,26 @@ impl<'a> Statement<'a> {
         let blob_pointer = blob.as_ptr() as *const _;
         let len = blob.len() as c_int;
         unsafe {
-            sqlite3_bind_blob(self.statement, index, blob_pointer, len, SQLITE_TRANSIENT());
+            sqlite3_bind_blob(
+                self.raw_statement,
+                index,
+                blob_pointer,
+                len,
+                SQLITE_TRANSIENT(),
+            );
         }
         self.connection.last_error()
     }
 
     pub fn column_blob<'b>(&'b mut self, index: i32) -> Result<&'b [u8]> {
         let index = index as c_int;
-        let pointer = unsafe { sqlite3_column_blob(self.statement, index) };
+        let pointer = unsafe { sqlite3_column_blob(self.raw_statement, index) };
 
         self.connection.last_error()?;
         if pointer.is_null() {
             return Ok(&[]);
         }
-        let len = unsafe { sqlite3_column_bytes(self.statement, index) as usize };
+        let len = unsafe { sqlite3_column_bytes(self.raw_statement, index) as usize };
         self.connection.last_error()?;
         unsafe { Ok(slice::from_raw_parts(pointer as *const u8, len)) }
     }
@@ -87,14 +93,14 @@ impl<'a> Statement<'a> {
         let index = index as c_int;
 
         unsafe {
-            sqlite3_bind_double(self.statement, index, double);
+            sqlite3_bind_double(self.raw_statement, index, double);
         }
         self.connection.last_error()
     }
 
     pub fn column_double(&self, index: i32) -> Result<f64> {
         let index = index as c_int;
-        let result = unsafe { sqlite3_column_double(self.statement, index) };
+        let result = unsafe { sqlite3_column_double(self.raw_statement, index) };
         self.connection.last_error()?;
         Ok(result)
     }
@@ -103,14 +109,14 @@ impl<'a> Statement<'a> {
         let index = index as c_int;
 
         unsafe {
-            sqlite3_bind_int(self.statement, index, int);
+            sqlite3_bind_int(self.raw_statement, index, int);
         }
         self.connection.last_error()
     }
 
     pub fn column_int(&self, index: i32) -> Result<i32> {
         let index = index as c_int;
-        let result = unsafe { sqlite3_column_int(self.statement, index) };
+        let result = unsafe { sqlite3_column_int(self.raw_statement, index) };
         self.connection.last_error()?;
         Ok(result)
     }
@@ -118,14 +124,14 @@ impl<'a> Statement<'a> {
     pub fn bind_int64(&self, index: i32, int: i64) -> Result<()> {
         let index = index as c_int;
         unsafe {
-            sqlite3_bind_int64(self.statement, index, int);
+            sqlite3_bind_int64(self.raw_statement, index, int);
         }
         self.connection.last_error()
     }
 
     pub fn column_int64(&self, index: i32) -> Result<i64> {
         let index = index as c_int;
-        let result = unsafe { sqlite3_column_int64(self.statement, index) };
+        let result = unsafe { sqlite3_column_int64(self.raw_statement, index) };
         self.connection.last_error()?;
         Ok(result)
     }
@@ -133,7 +139,7 @@ impl<'a> Statement<'a> {
     pub fn bind_null(&self, index: i32) -> Result<()> {
         let index = index as c_int;
         unsafe {
-            sqlite3_bind_null(self.statement, index);
+            sqlite3_bind_null(self.raw_statement, index);
         }
         self.connection.last_error()
     }
@@ -143,20 +149,26 @@ impl<'a> Statement<'a> {
         let text_pointer = text.as_ptr() as *const _;
         let len = text.len() as c_int;
         unsafe {
-            sqlite3_bind_blob(self.statement, index, text_pointer, len, SQLITE_TRANSIENT());
+            sqlite3_bind_blob(
+                self.raw_statement,
+                index,
+                text_pointer,
+                len,
+                SQLITE_TRANSIENT(),
+            );
         }
         self.connection.last_error()
     }
 
     pub fn column_text<'b>(&'b mut self, index: i32) -> Result<&'b str> {
         let index = index as c_int;
-        let pointer = unsafe { sqlite3_column_text(self.statement, index) };
+        let pointer = unsafe { sqlite3_column_text(self.raw_statement, index) };
 
         self.connection.last_error()?;
         if pointer.is_null() {
             return Ok("");
         }
-        let len = unsafe { sqlite3_column_bytes(self.statement, index) as usize };
+        let len = unsafe { sqlite3_column_bytes(self.raw_statement, index) as usize };
         self.connection.last_error()?;
 
         let slice = unsafe { slice::from_raw_parts(pointer as *const u8, len) };
@@ -174,7 +186,7 @@ impl<'a> Statement<'a> {
     }
 
     pub fn column_type(&mut self, index: i32) -> Result<SqlType> {
-        let result = unsafe { sqlite3_column_type(self.statement, index) }; // SELECT <FRIEND> FROM TABLE
+        let result = unsafe { sqlite3_column_type(self.raw_statement, index) }; // SELECT <FRIEND> FROM TABLE
         self.connection.last_error()?;
         match result {
             SQLITE_INTEGER => Ok(SqlType::Integer),
@@ -193,7 +205,7 @@ impl<'a> Statement<'a> {
 
     fn step(&mut self) -> Result<StepResult> {
         unsafe {
-            match sqlite3_step(self.statement) {
+            match sqlite3_step(self.raw_statement) {
                 SQLITE_ROW => Ok(StepResult::Row),
                 SQLITE_DONE => Ok(StepResult::Done),
                 SQLITE_MISUSE => Ok(StepResult::Misuse),
@@ -282,7 +294,12 @@ impl<'a> Statement<'a> {
 
 impl<'a> Drop for Statement<'a> {
     fn drop(&mut self) {
-        unsafe { sqlite3_finalize(self.statement) };
+        unsafe {
+            sqlite3_finalize(self.raw_statement);
+            self.connection
+                .last_error()
+                .expect("sqlite3 finalize failed for statement :(");
+        };
     }
 }
 
