@@ -71,6 +71,22 @@ impl Connection {
         Statement::prepare(&self, query)
     }
 
+    pub fn backup(&self, destination: &Connection) -> Result<()> {
+        unsafe {
+            let backup = sqlite3_backup_init(
+                destination.sqlite3,
+                CString::new("main")?.as_ptr(),
+                self.sqlite3,
+                CString::new("main")?.as_ptr(),
+            );
+            sqlite3_backup_step(backup, -1);
+            sqlite3_backup_finish(backup);
+            destination.last_error()?;
+        };
+
+        Ok(())
+    }
+
     pub(crate) fn last_error(&self) -> Result<()> {
         const NON_ERROR_CODES: &[i32] = &[SQLITE_OK, SQLITE_ROW];
         unsafe {
@@ -204,5 +220,34 @@ mod test {
                 .unwrap(),
             vec![tuple1, tuple2]
         );
+    }
+
+    #[test]
+    fn backup_works() {
+        let connection1 = Connection::open_memory("backup_works");
+        connection1
+            .exec(indoc! {"
+                CREATE TABLE blobs (
+                    data BLOB
+                );"})
+            .unwrap();
+        let blob = &[0, 1, 2, 4, 8, 16, 32, 64];
+        let mut write = connection1
+            .prepare("INSERT INTO blobs (data) VALUES (?);")
+            .unwrap();
+        write.bind_blob(1, blob).unwrap();
+        assert_eq!(write.step().unwrap(), StepResult::Done);
+
+        // Backup connection1 to connection2
+        let connection2 = Connection::open_memory("backup_works_other");
+        connection1.backup(&connection2).unwrap();
+
+        // Delete the added blob and verify its deleted on the other side
+        let read_blobs = connection1
+            .prepare("SELECT * FROM blobs;")
+            .unwrap()
+            .rows::<Vec<u8>>()
+            .unwrap();
+        assert_eq!(read_blobs, vec![blob]);
     }
 }
