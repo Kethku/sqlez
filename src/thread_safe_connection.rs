@@ -24,7 +24,7 @@ impl ThreadSafeConnection {
 
     /// Sets the query to run every time a connection is opened. This must
     /// be infallible (EG only use pragma statements)
-    pub fn with_initalize_query(mut self, initialize_query: &'static str) -> Self {
+    pub fn with_initialize_query(mut self, initialize_query: &'static str) -> Self {
         self.initialize_query = Some(initialize_query);
         self
     }
